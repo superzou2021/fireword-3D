@@ -1,19 +1,18 @@
 # fireword-3d
-#### Description
-
-3D fireworks built with Three.js (requires high GPU performance)
+#### Project Description
+A 3D fireworks display project built with Vue and Three.js.
+Recommended Node version: 24.0.2, minimum version > 18.20.8.
+Online preview: http://111.229.215.123:8233
 
 #### Software Architecture
 Vue 3 + Three.js based 3D visualization application
 
-#### Installation
-
+#### Installation Guide
 1. Clone the repository
 2. Run `npm install` to install dependencies
 3. Run `npm run dev` to start development server
 
-#### Instructions
-
+#### Usage Instructions
 1. Modify text content in src/App.vue
 2. Adjust Three.js parameters for different 3D effects
 3. Run `npm run build` to build production version
