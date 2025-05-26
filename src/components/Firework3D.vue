@@ -24,7 +24,14 @@ const sparks = [];
 const instancedSystems = []; // 添加实例化系统数组
 const PI_2 = Math.PI * 2;
 const PI_HALF = Math.PI * 0.5;
-  const GRAVITY = 0.025; // 略微增加重力常数，加快上升和下落的速度
+const GRAVITY = 0.025; // 略微增加重力常数，加快上升和下落的速度
+
+// 性能优化相关变量
+const MAX_PARTICLES = 1200; // 合理限制粒子数量，避免无限增长
+const MAX_SHELLS = 12; // 合理限制烟花弹数量
+let textureCache = new Map(); // 纹理缓存
+let materialCache = new Map(); // 材质缓存
+let geometryCache = new Map(); // 几何体缓存
 
 const keys = {
   w: false,
@@ -264,8 +271,14 @@ function createParticleMaterials() {
   cometMaterial.userData.originalSize = 2.0;
 }
 
-// 创建粒子纹理 - 降低分辨率
+// 创建粒子纹理 - 使用缓存优化
 function createParticleTexture(power = 1.0) {
+  // 检查纹理缓存
+  const cacheKey = `particle_${power}`;
+  if (textureCache.has(cacheKey)) {
+    return textureCache.get(cacheKey);
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = 64; // 从128降为64
   canvas.height = 64; // 从128降为64
@@ -341,11 +354,20 @@ function createParticleTexture(power = 1.0) {
   // 创建并返回纹理
   const texture = new THREE.Texture(canvas);
   texture.needsUpdate = true;
+  
+  // 缓存纹理
+  textureCache.set(cacheKey, texture);
   return texture;
 }
 
-// 创建彩色粒子纹理 - 降低分辨率
+// 创建彩色粒子纹理 - 使用缓存优化
 function createColoredParticleTexture(color, power = 1.0) {
+  // 检查纹理缓存
+  const cacheKey = `colored_particle_${color}_${power}`;
+  if (textureCache.has(cacheKey)) {
+    return textureCache.get(cacheKey);
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = 64; // 从128降为64
   canvas.height = 64; // 从128降为64
@@ -440,6 +462,9 @@ function createColoredParticleTexture(color, power = 1.0) {
   // 创建并返回纹理
   const texture = new THREE.Texture(canvas);
   texture.needsUpdate = true;
+  
+  // 缓存纹理
+  textureCache.set(cacheKey, texture);
   return texture;
 }
 
@@ -655,28 +680,26 @@ function createComet(x, y, z, color, angle, velocity, life) {
       // 根据时间动态调整本次生成的粒子数量
       const particlesToGenerate = Math.max(1, Math.round(this.particleRate * timeRatio));
       
-      // 生成新粒子
-      for (let i = 0; i < particlesToGenerate; i++) {
-        // 在球体表面随机位置生成粒子
-        const phi = Math.random() * Math.PI * 2;
-        const theta = Math.random() * Math.PI;
-        const radius = this.radius;
-        
-        // 球坐标转笛卡尔坐标
-        const x = headX + radius * Math.sin(theta) * Math.cos(phi);
-        const y = headY + radius * Math.sin(theta) * Math.sin(phi);
-        const z = headZ + radius * Math.cos(theta);
-        
-        // 计算到中心的距离比例（0为中心，1为边缘）
-        const distanceFromCenter = Math.sqrt(
-          Math.pow(Math.sin(theta) * Math.cos(phi), 2) + 
-          Math.pow(Math.sin(theta) * Math.sin(phi), 2) + 
-          Math.pow(Math.cos(theta), 2)
-        );
-        
-        // 边缘粒子生命周期短，中心粒子生命周期长
-        // 将生命周期延长为原来的两倍
-        const particleLife = 2000 * (1 - distanceFromCenter * 0.7);
+              // 生成新粒子 - 优化计算
+        for (let i = 0; i < particlesToGenerate; i++) {
+          // 在球体表面随机位置生成粒子
+          const phi = Math.random() * Math.PI * 2;
+          const cosTheta = Math.random() * 2 - 1; // 直接计算cos值，避免sin和cos计算
+          const sinTheta = Math.sqrt(1 - cosTheta * cosTheta);
+          const radius = this.radius;
+          
+          // 球坐标转笛卡尔坐标 - 使用预计算的值
+          const cosPhi = Math.cos(phi);
+          const sinPhi = Math.sin(phi);
+          const x = headX + radius * sinTheta * cosPhi;
+          const y = headY + radius * sinTheta * sinPhi;
+          const z = headZ + radius * cosTheta;
+          
+          // 优化距离计算 - 直接使用归一化向量的长度
+          const distanceFromCenter = Math.sqrt(sinTheta * sinTheta + cosTheta * cosTheta);
+          
+          // 边缘粒子生命周期短，中心粒子生命周期长
+          const particleLife = 2000 * (1 - distanceFromCenter * 0.7);
         
         // 粒子初始速度（从头部速度稍微减小）
         const speedFactor = 0.9 - Math.random() * 0.2;
@@ -892,6 +915,21 @@ function calculateOpacity(currentLife, maxLife) {
 
 // 更新粒子位置和状态 - 使用批量更新减少needsUpdate调用
 function updateParticles(deltaTime) {
+  // 控制粒子数量，避免无限增长
+  if (stars.length > MAX_PARTICLES) {
+    // 移除最老的粒子
+    const particlesToRemove = stars.length - MAX_PARTICLES;
+    for (let i = 0; i < particlesToRemove; i++) {
+      const particle = stars[i];
+      scene.remove(particle.pointCloud);
+      if (particle.geometry) recycleGeometry(particle.geometry);
+      if (particle.pointCloud && particle.pointCloud.material) {
+        recycleMaterial(particle.pointCloud.material);
+      }
+    }
+    stars.splice(0, particlesToRemove);
+  }
+
   // 收集需要更新的几何体
   const needsUpdateGeometries = new Set();
   
@@ -901,6 +939,23 @@ function updateParticles(deltaTime) {
   // 更新星星粒子
   for (let i = stars.length - 1; i >= 0; i--) {
     const star = stars[i];
+
+    // 距离剔除 - 移除过远的粒子以提升性能
+    const distanceToCamera = Math.sqrt(
+      Math.pow(star.x - camera.position.x, 2) +
+      Math.pow(star.y - camera.position.y, 2) +
+      Math.pow(star.z - camera.position.z, 2)
+    );
+    
+    if (distanceToCamera > 3000) { // 超过3000单位距离的粒子被移除
+      scene.remove(star.pointCloud);
+      if (star.geometry) recycleGeometry(star.geometry);
+      if (star.pointCloud && star.pointCloud.material) {
+        recycleMaterial(star.pointCloud.material);
+      }
+      stars.splice(i, 1);
+      continue;
+    }
 
     // 更新生命周期 - 使用deltaTime使动画与帧率无关
     star.life -= 1500 * deltaTime; // 基于时间的生命值减少
@@ -956,11 +1011,20 @@ function updateParticles(deltaTime) {
     if (star.pointCloud && star.pointCloud.material) {
       star.pointCloud.material.opacity = opacity;
 
+      // LOD优化 - 根据距离调整粒子大小和透明度
+      let lodScale = 1.0;
+      if (distanceToCamera > 1500) {
+        lodScale = 0.6; // 远距离粒子变小
+      } else if (distanceToCamera > 800) {
+        lodScale = 0.8; // 中距离粒子稍小
+      }
+
       // 根据生命周期也调整粒子大小，但确保粒子尺寸在生命周期结束前仍然足够明显
       const lifeFactor = star.life / star.maxLife;
       // 使用自定义缩放曲线，使粒子在前70%的生命周期几乎保持原始大小
       const sizeScale = lifeFactor > 0.3 ? 0.8 + lifeFactor * 0.2 : 0.5 + lifeFactor * 0.3;
-      star.pointCloud.material.size = (star.pointCloud.material.userData.originalSize || 50.0) * sizeScale;
+      star.pointCloud.material.size = (star.pointCloud.material.userData.originalSize || 50.0) * sizeScale * lodScale;
+      star.pointCloud.material.opacity = opacity * (distanceToCamera > 2000 ? 0.7 : 1.0);
     }
   }
 
@@ -2014,8 +2078,8 @@ function createInstancedParticles(count, color, size = 0.6) { // 减小默认粒
   };
 }
 
-// 更新实例化粒子系统 - 添加视锥体剔除
-function updateInstancedSystems() {
+// 更新实例化粒子系统 - 添加视锥体剔除和性能优化
+function updateInstancedSystems(deltaTime) {
   // 创建视锥体用于视锥剔除
   const frustum = new THREE.Frustum();
   const cameraViewProjectionMatrix = new THREE.Matrix4();
@@ -2033,7 +2097,7 @@ function updateInstancedSystems() {
       continue;
     }
     
-    const continueUpdating = system.update();
+    const continueUpdating = system.update(deltaTime);
     if (!continueUpdating) {
       // 回收资源
       if (system.mesh) {
@@ -2048,6 +2112,17 @@ function updateInstancedSystems() {
 
 // 更新烟花状态
 function updateFireworks(deltaTime) {
+  // 限制烟花弹数量
+  if (shells.length > MAX_SHELLS) {
+    const shellsToRemove = shells.length - MAX_SHELLS;
+    for (let i = 0; i < shellsToRemove; i++) {
+      const shell = shells[i];
+      scene.remove(shell);
+      scene.remove(shell.tail);
+    }
+    shells.splice(0, shellsToRemove);
+  }
+
   updateComets(deltaTime);
   updateParticles(deltaTime);
   updateInstancedSystems(deltaTime); // 添加实例化系统更新
@@ -2083,25 +2158,19 @@ function animate() {
   // 增量帧计数器
   frameCount++;
   
-  // 在重型场景中（大量粒子）可选择跳过某些帧的非关键计算
-  // 当粒子数量过多时，可以跳过一些帧的物理更新但保持视觉渲染
-  const isHeavyScene = stars.length > 500 || instancedSystems.length > 5;
-  const skipComputation = isHeavyScene && (frameCount % 2 !== 0);
-  
   // 相机更新
   updateCameraPosition(cappedDeltaTime);
   if (controls) controls.update();
   
-  // 只有在不跳过计算的帧中更新物理
-  if (!skipComputation) {
-    updateFireworks(cappedDeltaTime);
-    
-    // 烟花发射控制
-    if (currentTime - lastFireworkTime > fireworkInterval && shells.length < 10) {
-      launchShell();
-      lastFireworkTime = currentTime;
-      fireworkInterval = getRandomFireworkInterval();
-    }
+  // 更新烟花物理
+  updateFireworks(cappedDeltaTime);
+  
+  // 烟花发射控制 - 动态调整发射频率
+  const maxShellsInScene = Math.min(MAX_SHELLS, 8); // 限制同时存在的烟花弹数量
+  if (currentTime - lastFireworkTime > fireworkInterval && shells.length < maxShellsInScene) {
+    launchShell();
+    lastFireworkTime = currentTime;
+    fireworkInterval = getRandomFireworkInterval();
   }
   
   // 总是渲染场景
@@ -2152,8 +2221,14 @@ function recycleGeometry(geometry) {
   }
 }
 
-// 从对象池获取材质
+// 从对象池获取材质 - 使用缓存优化
 function getMaterialFromPool(color) {
+  // 检查材质缓存
+  const cacheKey = `material_${color}`;
+  if (materialCache.has(cacheKey)) {
+    return materialCache.get(cacheKey).clone();
+  }
+
   if (materialPool.length > 0) {
     const material = materialPool.pop();
     material.color.set(color);
@@ -2171,6 +2246,9 @@ function getMaterialFromPool(color) {
     vertexColors: true
   });
   material.userData.originalSize = 5.0;
+  
+  // 缓存材质
+  materialCache.set(cacheKey, material);
   return material;
 }
 
@@ -2230,6 +2308,11 @@ onBeforeUnmount(() => {
     window.statsInstance.dom.parentNode.removeChild(window.statsInstance.dom);
     window.statsInstance = null;
   }
+  
+  // 清理缓存
+  textureCache.clear();
+  materialCache.clear();
+  geometryCache.clear();
 });
 </script>
 
